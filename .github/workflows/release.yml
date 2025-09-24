@@ -29,8 +29,8 @@ jobs:
       RUSTFLAGS: "-C target-cpu=native"
       CARGO_TERM_COLOR: always
       # Adjust these if your binary names differ
-      BIN1: keylogger
-      BIN2: keylogger-server
+      BIN1: nerc-keylogger
+      BIN2: nerc-keylogger-server
 
     steps:
       - name: Checkout
