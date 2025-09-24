@@ -1,0 +1,90 @@
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }} (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            archive: zip
+          - os: macos-14   # Apple Silicon runner
+            target: aarch64-apple-darwin
+            archive: tar.gz
+
+    env:
+      RUSTFLAGS: "-C target-cpu=native"
+      CARGO_TERM_COLOR: always
+      # Adjust these if your binary names differ
+      BIN1: keylog
+      BIN2: keylogger-server
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: "${{ matrix.target }}"
+          workspaces: |
+            .
+
+      - name: Build (release)
+        run: |
+          cargo build --release --target ${{ matrix.target }} --bin $BIN1
+          cargo build --release --target ${{ matrix.target }} --bin $BIN2
+
+      - name: Prepare bundle
+        shell: bash
+        run: |
+          set -eux
+          OUTDIR="dist"
+          mkdir -p "$OUTDIR"
+          EXT=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then EXT=".exe"; fi
+          STAGE="filehub-${{ matrix.target }}"
+          mkdir -p "$STAGE"
+          cp "target/${{ matrix.target }}/release/${BIN1}${EXT}" "$STAGE/" || true
+          cp "target/${{ matrix.target }}/release/${BIN2}${EXT}" "$STAGE/" || true
+          [ -f README.md ] && cp README.md "$STAGE/"
+          [ -f LICENSE ] && cp LICENSE "$STAGE/"
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            7z a "$OUTDIR/${STAGE}.zip" "./$STAGE/*" >/dev/null
+          else
+            tar -czf "$OUTDIR/${STAGE}.tar.gz" "$STAGE"
+          fi
+          ls -la "$OUTDIR"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: filehub-${{ matrix.target }}
+          path: dist/*
+
+      - name: Publish GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+
