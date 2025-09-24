@@ -1,0 +1,7 @@
+[workspace]
+members = [
+  "keylogger",
+  "keylogger-server",
+]
+resolver = "2"
+
