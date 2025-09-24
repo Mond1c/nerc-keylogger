@@ -45,7 +45,7 @@ fn create_callback(
             let m = unix_minute_now();
             append_event(
                 &mut writer,
-                KeyEvent { time: unix_now() * 60, key: format!("{:?}", key) }
+                KeyEvent { time: unix_now(), key: format!("{:?}", key) }
             ).unwrap();
 
             if m != current_minute {
