@@ -1,0 +1,17 @@
+[package]
+name = "keylogger-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = { version = "0.7", features=["multipart"] }
+tokio = { version = "1", features=["rt-multi-thread","macros","fs","signal"] }
+tower = "0.5"
+tower-http = { version = "0.5", features=["cors","trace","fs","limit"] }
+serde = { version = "1", features=["derive"] }
+serde_json = "1"
+config = "0.14"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features=["fmt","env-filter"] }
+sanitize-filename = "0.5"
+anyhow = "1"

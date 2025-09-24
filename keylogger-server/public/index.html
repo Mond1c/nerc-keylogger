@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Keylogger Server</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font: 14px/1.4 system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+    header { display:flex; align-items:center; gap:.5rem; }
+    ul { padding:0; list-style:none; }
+    li { display:flex; justify-content:space-between; gap:1rem; padding:.4rem 0; border-bottom:1px solid #eee; }
+    .muted { color:#777; }
+    button { cursor:pointer; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Keylogger Server</h1>
+  </header>
+
+  <section>
+    <h3>Upload</h3>
+    <form id="form">
+      <input type="file" name="file" required />
+      <button type="submit">Upload</button>
+      <span id="status" class="muted"></span>
+    </form>
+  </section>
+
+  <section>
+    <h3>Files</h3>
+    <ul id="list"></ul>
+  </section>
+
+  <script>
+    const form = document.getElementById('form');
+    const status = document.getElementById('status');
+    const list = document.getElementById('list');
+
+    async function refresh() {
+      const res = await fetch('/api/list');
+      const files = await res.json();
+      list.innerHTML = '';
+      for (const f of files) {
+        const li = document.createElement('li');
+        const a = document.createElement('a');
+        a.href = '/files/' + encodeURIComponent(f.name);
+        a.textContent = f.name;
+        const size = document.createElement('span');
+        size.className = 'muted';
+        size.textContent = (f.size/1024).toFixed(1) + ' KB';
+        const del = document.createElement('button');
+        del.textContent = 'Delete';
+        del.onclick = async () => {
+          await fetch('/api/delete/' + encodeURIComponent(f.name), { method:'POST' });
+          refresh();
+        };
+        li.append(a, size, del);
+        list.append(li);
+      }
+    }
+
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const data = new FormData(form);
+      status.textContent = 'Uploading…';
+      const res = await fetch('/api/upload', { method: 'POST', body: data });
+      status.textContent = res.ok ? 'Done' : 'Error';
+      await refresh();
+      form.reset();
+      setTimeout(()=> status.textContent='', 1500);
+    };
+
+    refresh();
+  </script>
+</body>
+</html>
+
