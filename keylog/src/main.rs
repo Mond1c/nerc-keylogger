@@ -10,13 +10,18 @@ struct KeyEvent {
     key: String,
 }
 
-fn unix_minute_now() -> u64 {
+fn unix_now() -> u64 {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    secs / 60
+    secs
 }
+
+fn unix_minute_now() -> u64 {
+    unix_now() / 60
+}
+
 
 fn append_event<W>(
     w: &mut W,
@@ -40,7 +45,7 @@ fn create_callback(
             let m = unix_minute_now();
             append_event(
                 &mut writer,
-                KeyEvent { time: m * 60, key: format!("{:?}", key) }
+                KeyEvent { time: unix_now() * 60, key: format!("{:?}", key) }
             ).unwrap();
 
             if m != current_minute {
