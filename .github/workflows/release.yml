@@ -29,7 +29,7 @@ jobs:
       RUSTFLAGS: "-C target-cpu=native"
       CARGO_TERM_COLOR: always
       # Adjust these if your binary names differ
-      BIN1: keylog
+      BIN1: keylogger
       BIN2: keylogger-server
 
     steps:
