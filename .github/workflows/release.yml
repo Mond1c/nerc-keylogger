@@ -88,7 +88,9 @@ jobs:
           RUSTFLAGS: ${{ matrix.rustflags }}
         run: |
           set -eux
-          # keylogger is Linux-only; only build the server on macOS
+          if [[ "${{ matrix.build_keylogger }}" == "true" ]]; then
+            cargo build --release --target ${{ matrix.target }} --bin "$BIN1"
+          fi
           cargo build --release --target ${{ matrix.target }} --bin "$BIN2"
 
       - name: Build (Windows, PowerShell)
@@ -97,7 +99,9 @@ jobs:
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
         run: |
-          # keylogger is Linux-only; only build the server on Windows
+          if ("${{ matrix.build_keylogger }}" -eq "true") {
+            cargo build --release --target ${{ matrix.target }} --bin $env:BIN1
+          }
           cargo build --release --target ${{ matrix.target }} --bin $env:BIN2
 
       - name: Prepare bundle
