@@ -43,13 +43,17 @@ fn create_callback(
     let cb = move |event: Event| {
         if let EventType::KeyPress(key) = event.event_type {
             let m = unix_minute_now();
-            append_event(
+            if let Err(e) = append_event(
                 &mut writer,
                 KeyEvent { time: unix_now(), key: format!("{:?}", key) }
-            ).unwrap();
+            ) {
+                println!("Failed to write to file: {}", e);
+            }
 
             if m != current_minute {
-                let _ = writer.flush();
+                if let Err(e) = writer.flush() {
+                    println!("Failed to flush file: {}", e);
+                }
                 current_minute = m;
             }
         }
