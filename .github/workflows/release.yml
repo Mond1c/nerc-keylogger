@@ -17,39 +17,45 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux (X11 backend)
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
-            build_keylogger: true
             rustflags: "-C target-cpu=native"
+          # Windows (Win32 hooks backend)
           - os: windows-2022
             target: x86_64-pc-windows-msvc
             archive: zip
-            build_keylogger: false
             rustflags: "-C target-cpu=native"
+          # macOS (Quartz event tap backend; Apple Silicon runner)
           - os: macos-14
             target: aarch64-apple-darwin
             archive: tar.gz
-            build_keylogger: false
-            rustflags: ""  # <-- avoid -C target-cpu=native to keep ring happy
+            rustflags: ""   # keep empty to avoid ring feature assertion
 
     env:
       CARGO_TERM_COLOR: always
-      BIN1: nerc-keylogger            # Linux-only
-      BIN2: nerc-keylogger-server     # Cross-platform
+      # adjust names if yours differ
+      BIN1: nerc-keylogger
+      BIN2: nerc-keylogger-server
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Linux system deps
-        if: matrix.os == 'ubuntu-22.04'
+      # ---- OS-specific system deps ----
+      - name: Install Linux system deps (X11/XInput/XTest)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libx11-dev libxi-dev libxtst-dev
+          sudo apt-get install -y \
+            pkg-config \
+            libx11-dev \
+            libxi-dev \
+            libxtst-dev
 
-      - name: Verify X11 pkg-config
-        if: matrix.os == 'ubuntu-22.04'
+      - name: Verify X11 pkg-config (optional)
+        if: runner.os == 'Linux'
         run: |
           pkg-config --libs --cflags x11
           pkg-config --libs --cflags xi
@@ -67,8 +73,7 @@ jobs:
           workspaces: |
             .
 
-      # -------- Build steps per OS to get shell/env expansion right --------
-
+      # ---- Build (per-OS shells so env expansion is correct) ----
       - name: Build (Linux, bash)
         if: runner.os == 'Linux'
         shell: bash
@@ -76,9 +81,7 @@ jobs:
           RUSTFLAGS: ${{ matrix.rustflags }}
         run: |
           set -eux
-          if [[ "${{ matrix.build_keylogger }}" == "true" ]]; then
-            cargo build --release --target ${{ matrix.target }} --bin "$BIN1"
-          fi
+          cargo build --release --target ${{ matrix.target }} --bin "$BIN1"
           cargo build --release --target ${{ matrix.target }} --bin "$BIN2"
 
       - name: Build (macOS, bash)
@@ -88,9 +91,7 @@ jobs:
           RUSTFLAGS: ${{ matrix.rustflags }}
         run: |
           set -eux
-          if [[ "${{ matrix.build_keylogger }}" == "true" ]]; then
-            cargo build --release --target ${{ matrix.target }} --bin "$BIN1"
-          fi
+          cargo build --release --target ${{ matrix.target }} --bin "$BIN1"
           cargo build --release --target ${{ matrix.target }} --bin "$BIN2"
 
       - name: Build (Windows, PowerShell)
@@ -99,11 +100,10 @@ jobs:
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
         run: |
-          if ("${{ matrix.build_keylogger }}" -eq "true") {
-            cargo build --release --target ${{ matrix.target }} --bin $env:BIN1
-          }
+          cargo build --release --target ${{ matrix.target }} --bin $env:BIN1
           cargo build --release --target ${{ matrix.target }} --bin $env:BIN2
 
+      # ---- Bundle per-target ----
       - name: Prepare bundle
         shell: bash
         run: |
@@ -112,12 +112,12 @@ jobs:
           mkdir -p "$OUTDIR"
           EXT=""
           if [[ "${{ runner.os }}" == "Windows" ]]; then EXT=".exe"; fi
+
           STAGE="artifacts-${{ matrix.target }}"
           mkdir -p "$STAGE"
 
-          # Copy binaries if they exist
-          [ -f "target/${{ matrix.target }}/release/${BIN1}${EXT}" ] && cp "target/${{ matrix.target }}/release/${BIN1}${EXT}" "$STAGE/"
-          [ -f "target/${{ matrix.target }}/release/${BIN2}${EXT}" ] && cp "target/${{ matrix.target }}/release/${BIN2}${EXT}" "$STAGE/"
+          cp "target/${{ matrix.target }}/release/${BIN1}${EXT}" "$STAGE/"
+          cp "target/${{ matrix.target }}/release/${BIN2}${EXT}" "$STAGE/"
 
           [ -f README.md ] && cp README.md "$STAGE/"
           [ -f LICENSE ] && cp LICENSE "$STAGE/"
