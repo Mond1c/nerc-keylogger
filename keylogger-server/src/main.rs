@@ -16,6 +16,8 @@ use tower_http::{
 };
 use tracing::{error, info};
 use tracing_subscriber::{fmt, EnvFilter};
+use flate2::read::GzDecoder;
+use std::io::Read;
 
 #[derive(Clone)]
 struct AppState {
@@ -89,11 +91,7 @@ async fn upload(
         let filename = field.file_name()
             .map(|s| s.to_string())
             .unwrap_or("upload.bin".into());
-        let safe = sanitize(&filename);
-
-        let mut path = PathBuf::from(&state.cfg.upload_dir);
-        path.push(&safe);
-
+        
         let bytes = match field.bytes().await {
             Ok(b) => b,
             Err(e) => {
@@ -105,8 +103,30 @@ async fn upload(
             }
         };
 
+        let (final_bytes, final_filename) = if filename.ends_with(".gz") || is_gzipped(&bytes) {
+            match decompress_gzip(&bytes) {
+                Ok(decompressed) => {
+                    let base_name = filename.trim_end_matches(".gz");
+                    (decompressed, base_name.to_string())
+                }
+                Err(e) => {
+                    error!("Failed to decompress gzip: {}", e);
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        "Failed to decompress gzipped file"
+                    ).into_response();
+                }
+            }
+        } else {
+            (bytes.to_vec(), filename)
+        };
+
+        let safe = sanitize(&final_filename);
+        let mut path = PathBuf::from(&state.cfg.upload_dir);
+        path.push(&safe);
+
         let tmp = path.with_extension("part");
-        if let Err(e) = write_atomic(&tmp, &path, &bytes).await {
+        if let Err(e) = write_atomic(&tmp, &path, &final_bytes).await {
             error!(?e, "save failed");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -178,6 +198,17 @@ async fn delete_file(
         Ok(_) => (StatusCode::OK, "deleted").into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
+}
+
+fn is_gzipped(data: &[u8]) -> bool {
+    data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b
+}
+
+fn decompress_gzip(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let mut decoder = GzDecoder::new(data);
+    let mut decompressed = Vec::new();
+    decoder.read_to_end(&mut decompressed)?;
+    Ok(decompressed)
 }
 
 

