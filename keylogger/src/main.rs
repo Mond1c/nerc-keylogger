@@ -120,6 +120,12 @@ impl KeyAggregator {
         }
     }
 
+    fn key_to_string(key: &Key) -> String {
+        let json = serde_json::to_string(key).unwrap_or_else(|_| format!("{:?}", key));
+
+        json.trim_matches('"').to_lowercase()
+    }
+
     fn is_modifier(&self, key: &Key) -> bool {
         matches!(
             key,
@@ -142,7 +148,7 @@ impl KeyAggregator {
     }
 
     fn record_key(&mut self, key: &Key) {
-        let key_name = format!("{:?}", key).to_lowercase();
+        let key_name = Self::key_to_string(key);
         let stats = self.key_data.entry(key_name).or_insert_with(KeyStats::default);
 
         stats.raw += 1;
