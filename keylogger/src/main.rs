@@ -123,7 +123,13 @@ impl KeyAggregator {
     fn key_to_string(key: &Key) -> String {
         let json = serde_json::to_string(key).unwrap_or_else(|_| format!("{:?}", key));
 
-        json.trim_matches('"').to_lowercase()
+        let mut key_name = json.trim_matches('"').to_lowercase();
+
+        if key_name.starts_with("key") && key_name.len() > 3 {
+            key_name = key_name[3..].to_string();
+        }
+
+        key_name
     }
 
     fn is_modifier(&self, key: &Key) -> bool {
