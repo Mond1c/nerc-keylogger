@@ -56,6 +56,10 @@ struct KeyStats {
     shift_alt: u32,
 }
 
+fn is_zero(val: &u32) -> bool {
+    *val == 0
+}
+
 struct KeyAggregator {
     current_minute: u64,
     minute_start: DateTime<Utc>,
@@ -197,7 +201,7 @@ fn unix_minute_now() -> u64 {
 }
 
 
-fn append_event<W>(
+fn append_entry<W>(
     writer: &mut W,
     entry: &KeylogEntry,
 ) -> std::io::Result<()>
