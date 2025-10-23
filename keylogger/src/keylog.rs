@@ -34,11 +34,10 @@ fn is_zero(val: &u32) -> bool {
 }
 
 fn unix_now() -> u64 {
-    let secs = SystemTime::now()
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_secs();
-    secs
+        .as_secs()
 }
 
 fn unix_minute_now() -> u64 {
@@ -70,11 +69,7 @@ impl KeyAggregator {
     pub fn process_event(&mut self, event: Event) -> Option<KeylogEntry> {
         let current_minute = unix_minute_now();
 
-        let should_flush = if current_minute != self.current_minute {
-            true
-        } else {
-            false
-        };
+        let should_flush = current_minute != self.current_minute;
 
         match event.event_type {
             EventType::KeyPress(key) => {
@@ -140,7 +135,7 @@ impl KeyAggregator {
 
     fn record_key(&mut self, key: &Key) {
         let key_name = Self::key_to_string(key);
-        let stats = self.key_data.entry(key_name).or_insert_with(KeyStats::default);
+        let stats = self.key_data.entry(key_name).or_default();
 
         stats.raw += 1;
 
