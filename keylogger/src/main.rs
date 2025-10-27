@@ -26,6 +26,10 @@ struct Args {
     #[arg(short, long, default_value_t = 60)]
     interval: u64,
 
+    /// Logger NDJSON save interval in milliseconds
+    #[arg(short, long, default_value_t = 60000)]
+    logger_interval: u64,
+
     /// Enable debug mode with periodic uploads
     #[arg(short, long, default_value_t = false)]
     debug: bool,
@@ -45,10 +49,11 @@ where
 }
 
 fn create_callback(
+    logger_interval: std::time::Duration,
     mut writer: BufWriter<File>,
     flush_signal: Arc<Mutex<bool>>
 ) -> Box<dyn FnMut(Event) + Send> {
-    let mut aggregator = KeyAggregator::new();
+    let mut aggregator = KeyAggregator::new(logger_interval);
 
     let cb = move |event: Event| {
         if let Some(entry) = aggregator.process_event(event) {
@@ -124,10 +129,15 @@ async fn main() -> anyhow::Result<()> {
         println!("Debug mode: enabled");
         println!("Upload URL: {}", args.url);
         println!("Upload interval: {} seconds", args.interval);
+        println!("Logger interval: {} ms", args.logger_interval);
     }
 
     let flush_signal = Arc::new(Mutex::new(false));
-    let callback = create_callback(writer, flush_signal.clone());
+    let callback = create_callback(
+        std::time::Duration::from_millis(args.logger_interval), 
+        writer, 
+        flush_signal.clone()
+    );
     let (stop_tx, mut stop_rx) = watch::channel(false);
 
     if args.debug {

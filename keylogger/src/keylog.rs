@@ -1,7 +1,7 @@
 use serde::Serialize;
 use rdev::{Event, EventType, Key};
 use chrono::{DateTime, Utc};
-use std::{collections::HashMap, time::{SystemTime, UNIX_EPOCH}};
+use std::{collections::HashMap, time::{SystemTime, UNIX_EPOCH, Duration}};
 
 #[derive(Serialize)]
 pub struct KeylogEntry {
@@ -33,20 +33,16 @@ fn is_zero(val: &u32) -> bool {
     *val == 0
 }
 
-fn unix_now() -> u64 {
+fn unix_now() -> Duration {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_secs()
-}
-
-fn unix_minute_now() -> u64 {
-    unix_now() / 60
 }
 
 pub struct KeyAggregator {
-    current_minute: u64,
-    minute_start: DateTime<Utc>,
+    current_interval: u128,
+    interval_length: Duration,
+    interval_start: DateTime<Utc>,
     key_data: HashMap<String, KeyStats>,
     shift_pressed: bool,
     ctrl_pressed: bool,
@@ -54,11 +50,11 @@ pub struct KeyAggregator {
 }
 
 impl KeyAggregator {
-    pub fn new() -> Self {
-        let now = Utc::now();
+    pub fn new(interval_length: Duration) -> Self {
         Self {
-            current_minute: unix_minute_now(),
-            minute_start: now,
+            current_interval: unix_now().as_nanos() / interval_length.as_nanos(),
+            interval_length: interval_length,
+            interval_start: Utc::now(),
             key_data: HashMap::new(),
             shift_pressed: false,
             ctrl_pressed: false,
@@ -67,9 +63,9 @@ impl KeyAggregator {
     }
 
     pub fn process_event(&mut self, event: Event) -> Option<KeylogEntry> {
-        let current_minute = unix_minute_now();
+        let current_interval: u128 = unix_now().as_nanos() / self.interval_length.as_nanos();
 
-        let should_flush = current_minute != self.current_minute;
+        let should_flush = current_interval != self.current_interval;
 
         match event.event_type {
             EventType::KeyPress(key) => {
@@ -86,13 +82,13 @@ impl KeyAggregator {
 
         if should_flush && !self.key_data.is_empty() {
             let entry = KeylogEntry {
-                timestamp: self.minute_start.to_rfc3339(),
+                timestamp: self.interval_start.to_rfc3339(),
                 keys: self.key_data.clone(),
             };
 
             self.key_data.clear();
-            self.current_minute = current_minute;
-            self.minute_start = Utc::now();
+            self.current_interval = current_interval;
+            self.interval_start = Utc::now();
 
             Some(entry)
         } else {
@@ -174,7 +170,7 @@ impl KeyAggregator {
         }
 
         Some(KeylogEntry {
-            timestamp: self.minute_start.to_rfc3339(),
+            timestamp: self.interval_start.to_rfc3339(),
             keys: self.key_data.clone()
         })
     }
