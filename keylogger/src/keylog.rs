@@ -1,7 +1,9 @@
 use serde::Serialize;
 use rdev::{Event, EventType, Key};
 use chrono::{DateTime, Utc};
-use std::{collections::HashMap, time::{SystemTime, UNIX_EPOCH, Duration}};
+use std::{collections::HashMap, sync::{Mutex, Arc}, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::sync::mpsc;
+use std::thread;
 
 #[derive(Serialize)]
 pub struct KeylogEntry {
@@ -53,7 +55,7 @@ impl KeyAggregator {
     pub fn new(interval_length: Duration) -> Self {
         Self {
             current_interval: unix_now().as_nanos() / interval_length.as_nanos(),
-            interval_length: interval_length,
+            interval_length,
             interval_start: Utc::now(),
             key_data: HashMap::new(),
             shift_pressed: false,
@@ -62,9 +64,71 @@ impl KeyAggregator {
         }
     }
 
-    pub fn process_event(&mut self, event: Event) -> Option<KeylogEntry> {
-        let current_interval: u128 = unix_now().as_nanos() / self.interval_length.as_nanos();
+    pub fn start_keylogger_processor(mut self) -> (Arc<Mutex<Self>>, mpsc::Receiver<KeylogEntry>) {
+        let (tx, rx) = mpsc::channel();
+        let interval_length = self.interval_length;
 
+        let processor = Arc::new(Mutex::new(self));
+        let processor_clone = Arc::clone(&processor);
+
+        thread::spawn(move || {
+            loop {
+                thread::sleep(interval_length);
+
+                let entry = {
+                    let mut proc = processor_clone.lock().unwrap();
+                    let current_time = unix_now();
+                    let current_interval = current_time.as_nanos() / interval_length.as_nanos();
+                    proc.flush_interval(current_time.as_nanos(), current_interval)
+                };
+
+                if let Some(entry) = entry {
+                    if tx.send(entry).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        (processor, rx)
+    }
+
+    pub fn force_flush(&mut self) -> Option<KeylogEntry> {
+        let current_time = unix_now();
+        let current_interval: u128 = current_time.as_nanos() / self.interval_length.as_nanos();
+
+
+        if current_interval != self.current_interval {
+            self.flush_interval(current_time.as_nanos(), current_interval)
+        } else {
+            None
+        }
+    }
+
+    fn flush_interval(&mut self, current_time: u128, current_interval: u128) -> Option<KeylogEntry> {
+        let entry = KeylogEntry {
+            timestamp: self.interval_start.to_rfc3339(),
+            keys: self.key_data.clone(), // Include even if empty
+        };
+
+        self.key_data.clear();
+        self.current_interval = current_interval;
+
+        let secs = (current_time / 1_000_000_000) as i64;
+        let subsec_nanos = (current_time % 1_000_000_000) as u32;
+        if let Some(datetime) = DateTime::from_timestamp(secs, subsec_nanos) {
+            self.interval_start = datetime;
+        } else {
+            self.interval_start = Utc::now();
+        }
+
+        Some(entry)
+    }
+
+
+    pub fn process_event(&mut self, event: Event) -> Option<KeylogEntry> {
+        let current_time = unix_now();
+        let current_interval: u128 = current_time.as_nanos() / self.interval_length.as_nanos();
         let should_flush = current_interval != self.current_interval;
 
         match event.event_type {
@@ -80,17 +144,8 @@ impl KeyAggregator {
             _ => {}
         }
 
-        if should_flush && !self.key_data.is_empty() {
-            let entry = KeylogEntry {
-                timestamp: self.interval_start.to_rfc3339(),
-                keys: self.key_data.clone(),
-            };
-
-            self.key_data.clear();
-            self.current_interval = current_interval;
-            self.interval_start = Utc::now();
-
-            Some(entry)
+        if should_flush {
+            self.flush_interval(current_time.as_nanos(), current_interval)
         } else {
             None
         }

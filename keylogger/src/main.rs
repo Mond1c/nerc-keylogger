@@ -53,10 +53,11 @@ fn create_callback(
     mut writer: BufWriter<File>,
     flush_signal: Arc<Mutex<bool>>
 ) -> Box<dyn FnMut(Event) + Send> {
-    let mut aggregator = KeyAggregator::new(logger_interval);
+    let aggregator = KeyAggregator::new(logger_interval);
+    let (aggregator, rx) = aggregator.start_keylogger_processor();
 
-    let cb = move |event: Event| {
-        if let Some(entry) = aggregator.process_event(event) {
+    std::thread::spawn(move || {
+        while let Ok(entry) = rx.recv() {
             if let Err(e) = append_entry(&mut writer, &entry) {
                 eprintln!("Failed to write to file: {}", e);
             }
@@ -68,6 +69,12 @@ fn create_callback(
             if let Ok(mut signal) = flush_signal.lock() {
                 *signal = true;
             }
+        }
+    });
+
+    let cb = move |event: Event| {
+        if let Ok(mut agg) = aggregator.lock() {
+            let _ = agg.process_event(event);
         }
     };
 
@@ -134,8 +141,8 @@ async fn main() -> anyhow::Result<()> {
 
     let flush_signal = Arc::new(Mutex::new(false));
     let callback = create_callback(
-        std::time::Duration::from_millis(args.logger_interval), 
-        writer, 
+        std::time::Duration::from_millis(args.logger_interval),
+        writer,
         flush_signal.clone()
     );
     let (stop_tx, mut stop_rx) = watch::channel(false);
