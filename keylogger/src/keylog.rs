@@ -93,18 +93,6 @@ impl KeyAggregator {
         (processor, rx)
     }
 
-    pub fn force_flush(&mut self) -> Option<KeylogEntry> {
-        let current_time = unix_now();
-        let current_interval: u128 = current_time.as_nanos() / self.interval_length.as_nanos();
-
-
-        if current_interval != self.current_interval {
-            self.flush_interval(current_time.as_nanos(), current_interval)
-        } else {
-            None
-        }
-    }
-
     fn flush_interval(&mut self, current_time: u128, current_interval: u128) -> Option<KeylogEntry> {
         let entry = KeylogEntry {
             timestamp: self.interval_start.to_rfc3339(),
@@ -127,10 +115,6 @@ impl KeyAggregator {
 
 
     pub fn process_event(&mut self, event: Event) -> Option<KeylogEntry> {
-        let current_time = unix_now();
-        let current_interval: u128 = current_time.as_nanos() / self.interval_length.as_nanos();
-        let should_flush = current_interval != self.current_interval;
-
         match event.event_type {
             EventType::KeyPress(key) => {
                 self.update_modifiers(&key, true);
@@ -144,11 +128,7 @@ impl KeyAggregator {
             _ => {}
         }
 
-        if should_flush {
-            self.flush_interval(current_time.as_nanos(), current_interval)
-        } else {
-            None
-        }
+        None
     }
 
     fn key_to_string(key: &Key) -> String {
