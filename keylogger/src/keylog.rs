@@ -31,20 +31,51 @@ pub struct KeyStats {
     pub ctrl_alt: u32,
     #[serde(rename = "shift+alt", skip_serializing_if = "is_zero")]
     pub shift_alt: u32,
+    #[serde(rename = "ctrl+shift+alt", skip_serializing_if = "is_zero")]
+    pub ctrl_shift_alt: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub meta: u32,
+    #[serde(rename = "ctrl+meta", skip_serializing_if = "is_zero")]
+    pub ctrl_meta: u32,
+    #[serde(rename = "shift+meta", skip_serializing_if = "is_zero")]
+    pub shift_meta: u32,
+    #[serde(rename = "alt+meta", skip_serializing_if = "is_zero")]
+    pub alt_meta: u32,
+    #[serde(rename = "ctrl+shift+meta", skip_serializing_if = "is_zero")]
+    pub ctrl_shift_meta: u32,
+    #[serde(rename = "ctrl+alt+meta", skip_serializing_if = "is_zero")]
+    pub ctrl_alt_meta: u32,
+    #[serde(rename = "shift+alt+meta", skip_serializing_if = "is_zero")]
+    pub shift_alt_meta: u32,
+    #[serde(rename = "ctrl+shift+alt+meta", skip_serializing_if = "is_zero")]
+    pub ctrl_shift_alt_meta: u32,
 }
 
 impl KeyStats {
     fn increment(&mut self, modifiers: &ModifiersState) {
         self.raw += 1;
-        match (modifiers.shift, modifiers.ctrl, modifiers.alt) {
-            (false, false, false) => self.bare += 1,
-            (true, false, false) => self.shift += 1,
-            (false, true, false) => self.ctrl += 1,
-            (false, false, true) => self.alt += 1,
-            (true, true, false) => self.ctrl_shift += 1,
-            (false, true, true) => self.ctrl_alt += 1,
-            (true, false, true) => self.shift_alt += 1,
-            _ => {}
+        match (
+            modifiers.shift,
+            modifiers.ctrl,
+            modifiers.alt,
+            modifiers.meta,
+        ) {
+            (false, false, false, false) => self.bare += 1,
+            (true, false, false, false) => self.shift += 1,
+            (false, true, false, false) => self.ctrl += 1,
+            (false, false, true, false) => self.alt += 1,
+            (true, true, false, false) => self.ctrl_shift += 1,
+            (false, true, true, false) => self.ctrl_alt += 1,
+            (true, false, true, false) => self.shift_alt += 1,
+            (true, true, true, false) => self.ctrl_shift_alt += 1,
+            (false, false, false, true) => self.meta += 1,
+            (true, false, false, true) => self.shift_meta += 1,
+            (false, true, false, true) => self.ctrl_meta += 1,
+            (false, false, true, true) => self.alt_meta += 1,
+            (true, true, false, true) => self.ctrl_shift_meta += 1,
+            (false, true, true, true) => self.ctrl_alt_meta += 1,
+            (true, false, true, true) => self.shift_alt_meta += 1,
+            (true, true, true, true) => self.ctrl_shift_alt_meta += 1,
         }
     }
 }
@@ -53,6 +84,7 @@ struct ModifiersState {
     shift: bool,
     ctrl: bool,
     alt: bool,
+    meta: bool,
 }
 
 impl ModifiersState {
@@ -61,6 +93,7 @@ impl ModifiersState {
             shift: false,
             ctrl: false,
             alt: false,
+            meta: false,
         }
     }
 
@@ -69,6 +102,7 @@ impl ModifiersState {
             Key::ShiftLeft | Key::ShiftRight => self.shift = pressed,
             Key::ControlLeft | Key::ControlRight => self.ctrl = pressed,
             Key::Alt | Key::AltGr => self.alt = pressed,
+            Key::MetaLeft | Key::MetaRight => self.meta = pressed,
             _ => {}
         }
     }
@@ -82,6 +116,8 @@ impl ModifiersState {
                 | Key::ControlRight
                 | Key::Alt
                 | Key::AltGr
+                | Key::MetaLeft
+                | Key::MetaRight
         )
     }
 }
