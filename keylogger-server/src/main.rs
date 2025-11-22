@@ -1,23 +1,23 @@
 use axum::{
+    Json, Router,
     extract::{Multipart, Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
+use flate2::read::GzDecoder;
 use sanitize_filename::sanitize;
 use serde::Serialize;
-use std::{net::SocketAddr, path::{Path as FsPath, PathBuf}, sync::Arc};
-use tokio::{fs, io::AsyncWriteExt};
-use tower_http::{
-    cors::CorsLayer,
-    services::ServeDir,
-    trace::TraceLayer,
-};
-use tracing::{error, info};
-use tracing_subscriber::{fmt, EnvFilter};
-use flate2::read::GzDecoder;
 use std::io::Read;
+use std::{
+    net::SocketAddr,
+    path::{Path as FsPath, PathBuf},
+    sync::Arc,
+};
+use tokio::{fs, io::AsyncWriteExt};
+use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
+use tracing::{error, info};
+use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Clone)]
 struct AppState {
@@ -37,24 +37,27 @@ impl AppConfig {
             .build()?;
 
         Ok(Self {
-            bind_addr: cfg.get_string("bind_addr")
+            bind_addr: cfg
+                .get_string("bind_addr")
                 .unwrap_or_else(|_| "127.0.0.1:8080".to_string()),
-            upload_dir: cfg.get_string("upload_dir")
+            upload_dir: cfg
+                .get_string("upload_dir")
                 .unwrap_or_else(|_| "uploads".to_string()),
         })
     }
 }
 
 #[derive(Serialize)]
-struct FileInfo { name: String, size: u64 }
+struct FileInfo {
+    name: String,
+    size: u64,
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env().
-                add_directive("info".parse().unwrap())
-        ).init();
+        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
+        .init();
 
     let cfg = Arc::new(AppConfig::load()?);
     fs::create_dir_all(&cfg.upload_dir).await?;
@@ -81,25 +84,22 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn upload(
-    State(state): State<AppState>,
-    mut mp: Multipart,
-) -> impl IntoResponse {
+async fn upload(State(state): State<AppState>, mut mp: Multipart) -> impl IntoResponse {
     while let Ok(Some(field)) = mp.next_field().await {
-        if field.name() != Some("file") { continue; }
+        if field.name() != Some("file") {
+            continue;
+        }
 
-        let filename = field.file_name()
+        let filename = field
+            .file_name()
             .map(|s| s.to_string())
             .unwrap_or("upload.bin".into());
-        
+
         let bytes = match field.bytes().await {
             Ok(b) => b,
             Err(e) => {
                 error!("Error reading file: {}", e);
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "Error reading file"
-                ).into_response();
+                return (StatusCode::BAD_REQUEST, "Error reading file").into_response();
             }
         };
 
@@ -111,10 +111,8 @@ async fn upload(
                 }
                 Err(e) => {
                     error!("Failed to decompress gzip: {}", e);
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        "Failed to decompress gzipped file"
-                    ).into_response();
+                    return (StatusCode::BAD_REQUEST, "Failed to decompress gzipped file")
+                        .into_response();
                 }
             }
         } else {
@@ -128,33 +126,24 @@ async fn upload(
         let tmp = path.with_extension("part");
         if let Err(e) = write_atomic(&tmp, &path, &final_bytes).await {
             error!(?e, "save failed");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Error saving file"
-            ).into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Error saving file").into_response();
         }
 
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "Location",
-            format!("/files/{}", safe).parse().unwrap()
-        );
+        headers.insert("Location", format!("/files/{}", safe).parse().unwrap());
 
         return (
             StatusCode::CREATED,
             headers,
-            format!("saved to {}", path.display())
-        ).into_response();
+            format!("saved to {}", path.display()),
+        )
+            .into_response();
     }
 
     (StatusCode::OK, "OK").into_response()
 }
 
-async fn write_atomic(
-    tmp: &PathBuf,
-    final_path: &PathBuf,
-    bytes: &[u8])
--> anyhow::Result<()> {
+async fn write_atomic(tmp: &PathBuf, final_path: &PathBuf, bytes: &[u8]) -> anyhow::Result<()> {
     let mut file = fs::File::create(tmp).await?;
     file.write_all(bytes).await?;
     file.flush().await?;
@@ -167,28 +156,30 @@ async fn list_files(State(state): State<AppState>) -> impl IntoResponse {
     let mut out = Vec::<FileInfo>::new();
     let mut rd = match fs::read_dir(&state.cfg.upload_dir).await {
         Ok(r) => r,
-        Err(_) => return Json(out)
+        Err(_) => return Json(out),
     };
 
     while let Ok(Some(entry)) = rd.next_entry().await {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') { continue; }
+        if name.starts_with('.') {
+            continue;
+        }
         let md = match entry.metadata().await {
             Ok(m) => m,
             Err(_) => continue,
         };
         if md.is_file() {
-            out.push(FileInfo { name, size: md.len() });
+            out.push(FileInfo {
+                name,
+                size: md.len(),
+            });
         }
     }
 
     Json(out)
 }
 
-async fn delete_file(
-    State(state): State<AppState>,
-    Path(name): Path<String>
-) -> impl IntoResponse {
+async fn delete_file(State(state): State<AppState>, Path(name): Path<String>) -> impl IntoResponse {
     let safe = sanitize(&name);
     let p = PathBuf::from(&state.cfg.upload_dir).join(&safe);
     if !p.starts_with(FsPath::new(&state.cfg.upload_dir)) {
@@ -210,5 +201,3 @@ fn decompress_gzip(data: &[u8]) -> anyhow::Result<Vec<u8>> {
     decoder.read_to_end(&mut decompressed)?;
     Ok(decompressed)
 }
-
-

