@@ -145,11 +145,6 @@ impl KeyAggregator {
     }
 
     fn flush(&mut self) -> Option<KeylogEntry> {
-        if self.buffer.is_empty() {
-            self.align_time();
-            return None;
-        }
-
         let timestamp = self.interval_start
             .duration_since(UNIX_EPOCH)
             .map(|d| Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos()).unwrap())
